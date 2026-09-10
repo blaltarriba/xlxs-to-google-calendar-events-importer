@@ -4,6 +4,9 @@ client_secret.json
 token.json
 *.pem
 
+# Console/browser screenshots used for debugging — they carry account details
+*.png
+
 # Python
 .venv/
 __pycache__/

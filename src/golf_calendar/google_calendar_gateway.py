@@ -14,6 +14,8 @@ import os
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
+from datetime import date
+from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
 from typing import Protocol
@@ -26,6 +28,8 @@ from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 from httplib2 import HttpLib2Error
+from oauthlib.oauth2.rfc6749.errors import AccessDeniedError
+from oauthlib.oauth2.rfc6749.errors import OAuth2Error
 
 from golf_calendar.config import ConfigError
 from golf_calendar.config import ImportSettings
@@ -33,6 +37,7 @@ from golf_calendar.domain import GolfCalendarError
 
 if TYPE_CHECKING:  # `googleapiclient._apis` ships only in the type stubs, not at runtime.
     from googleapiclient._apis.calendar.v3 import CalendarResource
+    from googleapiclient._apis.calendar.v3 import Event
 
 SCOPES = ["https://www.googleapis.com/auth/calendar"]
 
@@ -42,6 +47,18 @@ TOKEN_FILE_MODE = 0o600
 # calendarList returns subscribed and shared calendars too; only these roles can be
 # written to. Reusing a read-only calendar would fail once per event, far too late.
 WRITABLE_ACCESS_ROLES = frozenset({"owner", "writer"})
+
+# Private extended properties stamped on every event this tool creates. They are what a
+# re-run matches against, so they survive the event being renamed, moved or edited by hand.
+IMPORTER_PROPERTY = "importer"
+SESSION_PROPERTY = "session"
+# The session's own date, and the identity a re-run matches on. The ordinal cannot serve:
+# inserting one mid-season date renumbers every session after it, which would make a
+# second run duplicate the tail of the season and miss the new date entirely.
+SESSION_DATE_PROPERTY = "session_date"
+
+# Google caps a page of events at 2500; 250 is its own default and plenty per season.
+EVENTS_PAGE_SIZE = 250
 
 
 class CalendarError(GolfCalendarError):
@@ -64,6 +81,27 @@ class CalendarRef:
         return self.access_role in WRITABLE_ACCESS_ROLES
 
 
+@dataclass(frozen=True, slots=True)
+class CalendarEvent:
+    """An event to create, stated in local wall-clock time.
+
+    ``starts_at`` and ``ends_at`` are naive on purpose: paired with ``timezone`` they let
+    Google resolve the offset itself, so 17:30 stays 17:30 either side of a daylight-saving
+    change. A baked-in UTC offset would drift by an hour for half the season.
+    """
+
+    summary: str
+    description: str
+    location: str
+    starts_at: datetime
+    ends_at: datetime
+    timezone: str
+    invitees: tuple[str, ...]
+    shows_as_busy: bool
+    import_key: str
+    session_number: int
+
+
 class CalendarGateway(Protocol):
     """What the import service needs from a calendar account.
 
@@ -77,6 +115,14 @@ class CalendarGateway(Protocol):
 
     def create_calendar(self, name: str, timezone: str) -> CalendarRef:
         """Create a calendar and return it."""
+        ...
+
+    def list_imported_dates(self, calendar_id: str, import_key: str) -> frozenset[date]:
+        """The session dates this importer has already written into the calendar."""
+        ...
+
+    def create_event(self, calendar_id: str, event: CalendarEvent) -> str:
+        """Create one event and return its id."""
         ...
 
 
@@ -111,6 +157,50 @@ class GoogleCalendarGateway:
             )
         # calendars.insert reports no accessRole: the creator always owns the result.
         return _to_calendar_ref(created, default_access_role="owner")
+
+    def list_imported_dates(self, calendar_id: str, import_key: str) -> frozenset[date]:
+        """Ask once for everything this importer has already written.
+
+        The marker alone scopes the query, so no time window is imposed: bounding the
+        search to the season's own span would miss an event the user had dragged outside
+        it, and duplicate it on the next run.
+        """
+        found: set[date] = set()
+        page_token: str | None = None
+        while True:
+            with _translated_errors():
+                response = (
+                    self._service.events()
+                    .list(
+                        calendarId=calendar_id,
+                        privateExtendedProperty=[f"{IMPORTER_PROPERTY}={import_key}"],
+                        showDeleted=False,
+                        maxResults=EVENTS_PAGE_SIZE,
+                        pageToken=page_token,
+                    )
+                    .execute()
+                )
+            found.update(_session_dates(response.get("items", [])))
+            page_token = response.get("nextPageToken")
+            if not page_token:
+                return frozenset(found)
+
+    def create_event(self, calendar_id: str, event: CalendarEvent) -> str:
+        with _translated_errors():
+            created = (
+                self._service.events()
+                .insert(
+                    calendarId=calendar_id,
+                    body=_to_event_body(event),
+                    # The guest would otherwise receive one invitation email per session.
+                    sendUpdates="none",
+                )
+                .execute()
+            )
+        event_id = str(created.get("id") or "")
+        if not event_id:
+            raise CalendarError("Google Calendar created an event but returned no id")
+        return event_id
 
 
 def build_google_calendar_gateway(settings: ImportSettings) -> GoogleCalendarGateway:
@@ -178,7 +268,15 @@ def _authorised(client_secret_file: Path) -> Credentials:
         ) from error
     try:
         authorised: Credentials = flow.run_local_server(port=0)
-    except (GoogleAuthError, OSError) as error:
+    except AccessDeniedError as error:
+        # Overwhelmingly this is an unlisted test user rather than a deliberate refusal.
+        raise ConfigError(
+            "Google refused the sign-in (access_denied). While the OAuth consent screen is "
+            "in Testing, only listed test users may sign in: add the account you signed in "
+            "with under APIs & Services > OAuth consent screen > Audience > Test users. "
+            "If you pressed Cancel instead, just run the command again"
+        ) from error
+    except (OAuth2Error, GoogleAuthError, OSError) as error:
         raise CalendarError(f"the browser sign-in did not complete: {error}") from error
     return authorised
 
@@ -219,6 +317,53 @@ def _describe(error: HttpError) -> str:
     """
     reason = error.reason or "no reason given"
     return f"Google Calendar rejected the request ({error.status_code}): {reason}"
+
+
+def _to_event_body(event: CalendarEvent) -> Event:
+    """Render the event in the shape the API expects. The only place that shape is known."""
+    return {
+        "summary": event.summary,
+        "description": event.description,
+        "location": event.location,
+        "start": {"dateTime": event.starts_at.isoformat(), "timeZone": event.timezone},
+        "end": {"dateTime": event.ends_at.isoformat(), "timeZone": event.timezone},
+        "attendees": [{"email": invitee} for invitee in event.invitees],
+        "transparency": "opaque" if event.shows_as_busy else "transparent",
+        "extendedProperties": {
+            "private": {
+                IMPORTER_PROPERTY: event.import_key,
+                SESSION_PROPERTY: str(event.session_number),
+                SESSION_DATE_PROPERTY: event.starts_at.date().isoformat(),
+            }
+        },
+    }
+
+
+def _session_dates(items: object) -> set[date]:
+    """Read the session date off each event, ignoring anything that does not carry one."""
+    if not isinstance(items, list):
+        return set()
+    found: set[date] = set()
+    for item in items:
+        marked = _private_properties(item).get(SESSION_DATE_PROPERTY)
+        if not isinstance(marked, str):
+            continue
+        try:
+            found.add(date.fromisoformat(marked))
+        except ValueError:
+            continue
+    return found
+
+
+def _private_properties(item: object) -> dict[str, object]:
+    """The event's private extended properties, defensively — the API is not our code."""
+    if not isinstance(item, dict):
+        return {}
+    properties = item.get("extendedProperties")
+    if not isinstance(properties, dict):
+        return {}
+    private = properties.get("private")
+    return private if isinstance(private, dict) else {}
 
 
 def _to_calendar_ref(item: object, default_access_role: str = "") -> CalendarRef:

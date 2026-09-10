@@ -8,6 +8,9 @@ from __future__ import annotations
 
 import json
 import stat
+from dataclasses import replace
+from datetime import date
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -17,9 +20,12 @@ from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 from httplib2 import Response
 from httplib2.error import ServerNotFoundError
+from oauthlib.oauth2.rfc6749.errors import AccessDeniedError
+from oauthlib.oauth2.rfc6749.errors import InvalidGrantError
 
 from golf_calendar.config import ConfigError
 from golf_calendar.google_calendar_gateway import CalendarError
+from golf_calendar.google_calendar_gateway import CalendarEvent
 from golf_calendar.google_calendar_gateway import CalendarRef
 from golf_calendar.google_calendar_gateway import GoogleCalendarGateway
 from golf_calendar.google_calendar_gateway import load_credentials
@@ -72,6 +78,20 @@ class StubbedTransport:
 
     def call_count(self, method: str) -> int:
         return sum(1 for sent_method, _ in self.requests if sent_method == method)
+
+
+def _imported(session_date: date) -> dict[str, Any]:
+    """An event as this importer would have written it."""
+    return {
+        "id": f"evt-{session_date}",
+        "extendedProperties": {
+            "private": {
+                "importer": "key",
+                "session": "1",
+                "session_date": session_date.isoformat(),
+            }
+        },
+    }
 
 
 def gateway_for(transport: StubbedTransport) -> GoogleCalendarGateway:
@@ -205,6 +225,162 @@ class TestCreateCalendar:
         )
 
 
+SESSION_EVENT = CalendarEvent(
+    summary="Entrenamiento 12/30",
+    description="Entrenamiento\nSesión 12 de 30",
+    location="Test location, Test City",
+    starts_at=datetime(2026, 12, 15, 17, 30),  # noqa: DTZ001 — local wall clock, by design
+    ends_at=datetime(2026, 12, 15, 19, 30),  # noqa: DTZ001
+    timezone=TIMEZONE,
+    invitees=("wife@example.com",),
+    shows_as_busy=False,
+    import_key="golf-training-2026-2027-tuesday",
+    session_number=12,
+)
+
+
+class TestCreateEvent:
+    def test_sends_exactly_the_event_google_expects(self) -> None:
+        transport = StubbedTransport({"calendar.events.insert": [ok({"id": "evt-1"})]})
+
+        gateway_for(transport).create_event("cal-1", SESSION_EVENT)
+
+        assert transport.bodies_for("calendar.events.insert") == [
+            {
+                "summary": "Entrenamiento 12/30",
+                "description": "Entrenamiento\nSesión 12 de 30",
+                "location": "Test location, Test City",
+                "start": {"dateTime": "2026-12-15T17:30:00", "timeZone": TIMEZONE},
+                "end": {"dateTime": "2026-12-15T19:30:00", "timeZone": TIMEZONE},
+                "attendees": [{"email": "wife@example.com"}],
+                "transparency": "transparent",
+                "extendedProperties": {
+                    "private": {
+                        "importer": "golf-training-2026-2027-tuesday",
+                        "session": "12",
+                        "session_date": "2026-12-15",
+                    }
+                },
+            }
+        ]
+
+    def test_the_start_time_carries_no_utc_offset(self) -> None:
+        """An offset baked into the string would drift by an hour across a clock change."""
+        transport = StubbedTransport({"calendar.events.insert": [ok({"id": "evt-1"})]})
+
+        gateway_for(transport).create_event("cal-1", SESSION_EVENT)
+
+        body = transport.bodies_for("calendar.events.insert")[0]
+        assert body is not None
+        assert body["start"]["dateTime"] == "2026-12-15T17:30:00"
+        assert body["start"]["timeZone"] == TIMEZONE
+
+    def test_returns_the_new_event_id(self) -> None:
+        transport = StubbedTransport({"calendar.events.insert": [ok({"id": "evt-1"})]})
+
+        assert gateway_for(transport).create_event("cal-1", SESSION_EVENT) == "evt-1"
+
+    def test_rejects_a_response_without_an_id(self) -> None:
+        transport = StubbedTransport({"calendar.events.insert": [ok({})]})
+
+        with pytest.raises(CalendarError, match="returned no id"):
+            gateway_for(transport).create_event("cal-1", SESSION_EVENT)
+
+    def test_a_busy_event_is_marked_opaque(self) -> None:
+        transport = StubbedTransport({"calendar.events.insert": [ok({"id": "evt-1"})]})
+        busy = replace(SESSION_EVENT, shows_as_busy=True)
+
+        gateway_for(transport).create_event("cal-1", busy)
+
+        body = transport.bodies_for("calendar.events.insert")[0]
+        assert body is not None
+        assert body["transparency"] == "opaque"
+
+
+class TestListImportedDates:
+    def test_reads_the_session_dates_already_present(self) -> None:
+        transport = StubbedTransport(
+            {
+                "calendar.events.list": [
+                    ok(
+                        {
+                            "items": [
+                                _imported(date(2026, 9, 15)),
+                                _imported(date(2026, 9, 22)),
+                                _imported(date(2027, 6, 8)),
+                            ]
+                        }
+                    )
+                ]
+            }
+        )
+
+        found = gateway_for(transport).list_imported_dates("cal-1", "key")
+
+        assert found == frozenset({date(2026, 9, 15), date(2026, 9, 22), date(2027, 6, 8)})
+
+    def test_follows_every_page(self) -> None:
+        transport = StubbedTransport(
+            {
+                "calendar.events.list": [
+                    ok({"items": [_imported(date(2026, 9, 15))], "nextPageToken": "p2"}),
+                    ok({"items": [_imported(date(2026, 9, 22))]}),
+                ]
+            }
+        )
+
+        found = gateway_for(transport).list_imported_dates("cal-1", "key")
+
+        assert found == frozenset({date(2026, 9, 15), date(2026, 9, 22)})
+
+    def test_imposes_no_time_window(self) -> None:
+        """A window would miss an event the user had dragged outside the season."""
+        transport = StubbedTransport({"calendar.events.list": [ok({})]})
+
+        gateway_for(transport).list_imported_dates("cal-1", "key")
+
+        method, _ = transport.requests[0]
+        assert method == "calendar.events.list"
+        assert transport.call_count("calendar.events.list") == 1
+
+    def test_an_empty_calendar_yields_nothing(self) -> None:
+        transport = StubbedTransport({"calendar.events.list": [ok({})]})
+
+        assert gateway_for(transport).list_imported_dates("cal-1", "key") == frozenset()
+
+    @pytest.mark.parametrize(
+        "item",
+        [
+            {"id": "e"},
+            {"id": "e", "extendedProperties": {}},
+            {"id": "e", "extendedProperties": {"private": {}}},
+            {"id": "e", "extendedProperties": {"private": {"session_date": "not-a-date"}}},
+            {"id": "e", "extendedProperties": {"private": {"session_date": ""}}},
+            {"id": "e", "extendedProperties": {"private": {"session_date": "2026-13-45"}}},
+        ],
+    )
+    def test_ignores_an_event_without_a_usable_session_date(self, item: dict[str, Any]) -> None:
+        """A hand-made event in the same calendar must not be mistaken for an import."""
+        transport = StubbedTransport({"calendar.events.list": [ok({"items": [item]})]})
+
+        assert gateway_for(transport).list_imported_dates("cal-1", "key") == frozenset()
+
+    @pytest.mark.parametrize(
+        "item",
+        [
+            {"id": "e", "extendedProperties": "not-a-dict"},
+            {"id": "e", "extendedProperties": {"private": "not-a-dict"}},
+            {"id": "e", "extendedProperties": {"private": {"session_date": 20260915}}},
+            "not-a-dict",
+        ],
+    )
+    def test_a_malformed_response_does_not_escape_the_adapter(self, item: object) -> None:
+        """An AttributeError here would bypass the boundary's error translation."""
+        transport = StubbedTransport({"calendar.events.list": [ok({"items": [item]})]})
+
+        assert gateway_for(transport).list_imported_dates("cal-1", "key") == frozenset()
+
+
 class TestTranslatesFailures:
     @pytest.mark.parametrize(
         ("status", "message"),
@@ -313,7 +489,12 @@ class StubbedSignIn:
     def from_client_secrets_file(cls, _secret_file: str, _scopes: list[str]) -> StubbedSignIn:
         return cls()
 
+    refusal: Exception | None = None
+
     def run_local_server(self, port: int = 0) -> Credentials:  # noqa: ARG002
+        refusal = type(self).refusal
+        if refusal is not None:
+            raise refusal
         return Credentials(
             token="freshly-signed-in",
             refresh_token="refresh",
@@ -413,6 +594,43 @@ class TestLoadCredentials:
 
         assert credentials.token == "freshly-signed-in"
         assert json.loads(token_file.read_text())["token"] == "freshly-signed-in"
+
+    def test_an_unapproved_test_user_is_told_how_to_get_access(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """access_denied is almost always a missing test user, not a deliberate refusal."""
+        secret_file = tmp_path / "client_secret.json"
+        secret_file.write_text("{}", encoding="utf-8")
+        monkeypatch.setattr(StubbedSignIn, "refusal", AccessDeniedError())
+        monkeypatch.setattr("golf_calendar.google_calendar_gateway.InstalledAppFlow", StubbedSignIn)
+
+        with pytest.raises(ConfigError, match="Test users"):
+            load_credentials(secret_file, tmp_path / "token.json")
+
+    def test_another_oauth_failure_is_translated_too(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        secret_file = tmp_path / "client_secret.json"
+        secret_file.write_text("{}", encoding="utf-8")
+        monkeypatch.setattr(StubbedSignIn, "refusal", InvalidGrantError())
+        monkeypatch.setattr("golf_calendar.google_calendar_gateway.InstalledAppFlow", StubbedSignIn)
+
+        with pytest.raises(CalendarError, match="browser sign-in did not complete"):
+            load_credentials(secret_file, tmp_path / "token.json")
+
+    def test_no_token_is_written_when_the_sign_in_is_refused(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        secret_file = tmp_path / "client_secret.json"
+        secret_file.write_text("{}", encoding="utf-8")
+        token_file = tmp_path / "token.json"
+        monkeypatch.setattr(StubbedSignIn, "refusal", AccessDeniedError())
+        monkeypatch.setattr("golf_calendar.google_calendar_gateway.InstalledAppFlow", StubbedSignIn)
+
+        with pytest.raises(ConfigError):
+            load_credentials(secret_file, token_file)
+
+        assert not token_file.exists()
 
     def test_a_written_token_is_readable_only_by_its_owner(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

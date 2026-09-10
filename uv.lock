@@ -372,6 +372,7 @@ dependencies = [
     { name = "google-api-python-client" },
     { name = "google-auth" },
     { name = "google-auth-oauthlib" },
+    { name = "oauthlib" },
     { name = "openpyxl" },
     { name = "python-dotenv" },
 ]
@@ -382,6 +383,7 @@ dev = [
     { name = "mypy" },
     { name = "pytest" },
     { name = "ruff" },
+    { name = "types-oauthlib" },
     { name = "types-openpyxl" },
 ]
 
@@ -390,6 +392,7 @@ requires-dist = [
     { name = "google-api-python-client", specifier = ">=2.140.0" },
     { name = "google-auth", specifier = ">=2.34.0" },
     { name = "google-auth-oauthlib", specifier = ">=1.2.1" },
+    { name = "oauthlib", specifier = ">=3.3.1" },
     { name = "openpyxl", specifier = ">=3.1.5" },
     { name = "python-dotenv", specifier = ">=1.0.1" },
 ]
@@ -400,6 +403,7 @@ dev = [
     { name = "mypy", specifier = ">=1.11.0" },
     { name = "pytest", specifier = ">=8.3.0" },
     { name = "ruff", specifier = ">=0.6.0" },
+    { name = "types-oauthlib", specifier = ">=3.3.0.20260724" },
     { name = "types-openpyxl", specifier = ">=3.1.5.20260827" },
 ]
 
@@ -914,6 +918,15 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/98/74/d53a569942f365caa033f135012979d82f96c8b02ab8a9c5614617f12f65/types_httplib2-0.32.0.20260720.tar.gz", hash = "sha256:fdf42301174bccd6cede13dcffe130753f5c32c64b0a2b681a011504ffe6d1eb", size = 11746, upload-time = "2026-07-20T05:26:53.42Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/64/aa/9a6c889f79b97017244d9abbe9b886c196716ac6da47f0413e141871bb2b/types_httplib2-0.32.0.20260720-py3-none-any.whl", hash = "sha256:c8e838557fccd39bb08569839c7e625489c5b2db1c89ab54b6a3b808b9e9b392", size = 11466, upload-time = "2026-07-20T05:26:52.603Z" },
+]
+
+[[package]]
+name = "types-oauthlib"
+version = "3.3.0.20260724"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/9e/ed/72823bc9c60e8f5354827eec6b85aa1baec94b3ca6c62f8e104c3717c31b/types_oauthlib-3.3.0.20260724.tar.gz", hash = "sha256:00c7dab6a2f764e991180bff4bdb1ba8bddb1d546013b1c81f903192c30f2386", size = 26194, upload-time = "2026-07-24T04:58:57.564Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/2b/e8/96d1e19015c1384022a296a2e73d7843739ccc2f13afcaed5c2f797c86e4/types_oauthlib-3.3.0.20260724-py3-none-any.whl", hash = "sha256:73bc776c00ed00957bc1422a3a53696d8aa18f24c47a628e08566c0d4e0a6bbd", size = 48967, upload-time = "2026-07-24T04:58:56.634Z" },
 ]
 
 [[package]]
