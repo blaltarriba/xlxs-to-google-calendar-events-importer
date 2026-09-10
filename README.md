@@ -1,3 +1,8 @@
+# Note
+
+I used this use case to try Explore/Plan/Code/Commit workflow using Claude Code proposed by Anthropic.
+
+
 # Golf training calendar importer
 
 Reads the golf school's season spreadsheet (`Calendario 2627 L,M,M.xlsx`) and creates the
