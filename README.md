@@ -34,6 +34,23 @@ cp .env.example .env      # then fill in INVITEE_EMAIL
 `client_secret.json`, `token.json` and `.env` are gitignored and must never be committed.
 The first run opens a browser once; the resulting token is cached in `token.json`.
 
+## Usage
+
+```sh
+uv run golf-calendar list-sessions        # parse the sheet and print the season
+```
+
+`list-sessions` makes no Google API call and needs no credentials — only `SCHEDULE_FILE`,
+`TRAINING_WEEKDAY` and the event settings. It also reports whether the session count was
+cross-checked against the total the spreadsheet declares for itself.
+
+### Not built yet
+
+`auth-check` (step 3) and `import` (step 4) are described in the plan and are not part of
+this revision. `import` will be idempotent: each event carries a private marker naming its
+session number, so a re-run skips what already exists — even if the event has since been
+renamed or moved by hand.
+
 ## Development
 
 ```sh
