@@ -38,18 +38,24 @@ The first run opens a browser once; the resulting token is cached in `token.json
 
 ```sh
 uv run golf-calendar list-sessions        # parse the sheet and print the season
+uv run golf-calendar auth-check           # sign in, find or create the calendar, stop
 ```
 
 `list-sessions` makes no Google API call and needs no credentials — only `SCHEDULE_FILE`,
 `TRAINING_WEEKDAY` and the event settings. It also reports whether the session count was
 cross-checked against the total the spreadsheet declares for itself.
 
+`auth-check` is the first command that talks to Google. It performs the OAuth sign-in,
+caches the token, then finds or creates the calendar named by `CALENDAR_NAME` and stops
+without writing any event. Running it twice must report the same calendar id the second
+time, as `reused`. If two calendars already share that name it refuses to guess and names
+both ids, rather than scattering a season into the wrong one.
+
 ### Not built yet
 
-`auth-check` (step 3) and `import` (step 4) are described in the plan and are not part of
-this revision. `import` will be idempotent: each event carries a private marker naming its
-session number, so a re-run skips what already exists — even if the event has since been
-renamed or moved by hand.
+`import` (step 4) is described in the plan and is not part of this revision. It will be
+idempotent: each event carries a private marker naming its session number, so a re-run
+skips what already exists — even if the event has since been renamed or moved by hand.
 
 ## Development
 

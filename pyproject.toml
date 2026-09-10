@@ -20,6 +20,7 @@ build-backend = "hatchling.build"
 
 [dependency-groups]
 dev = [
+    "google-api-python-client-stubs>=1.40.0",
     "mypy>=1.11.0",
     "pytest>=8.3.0",
     "ruff>=0.6.0",
@@ -68,6 +69,9 @@ strict = true
 warn_unreachable = true
 disallow_any_unimported = true
 files = ["src", "tests"]
+# google-auth and its oauthlib helper ship no type information. Allow calling into them
+# without weakening strictness anywhere else.
+untyped_calls_exclude = ["google", "google_auth_oauthlib"]
 
 [[tool.mypy.overrides]]
 module = ["googleapiclient.*", "google_auth_oauthlib.*"]

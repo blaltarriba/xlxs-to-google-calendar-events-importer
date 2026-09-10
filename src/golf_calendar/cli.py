@@ -11,11 +11,14 @@ import sys
 from collections.abc import Sequence
 
 from golf_calendar.config import ScheduleSettings
+from golf_calendar.config import load_import_settings
 from golf_calendar.config import load_schedule_settings
 from golf_calendar.domain import GolfCalendarError
 from golf_calendar.domain import Season
 from golf_calendar.domain import TrainingSession
 from golf_calendar.excel_schedule_reader import read_season
+from golf_calendar.google_calendar_gateway import build_google_calendar_gateway
+from golf_calendar.import_service import ensure_calendar
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -38,12 +41,18 @@ def _build_parser() -> argparse.ArgumentParser:
         "list-sessions",
         help="Parse the spreadsheet and print the season. Makes no Google API call.",
     )
+    subcommands.add_parser(
+        "auth-check",
+        help="Sign in to Google, find or create the calendar, and stop. Writes no events.",
+    )
     return parser
 
 
 def _run(arguments: argparse.Namespace) -> int:
     if arguments.command == "list-sessions":
         return _list_sessions()
+    if arguments.command == "auth-check":
+        return _auth_check()
     raise GolfCalendarError(f"unhandled command {arguments.command!r}")
 
 
@@ -58,6 +67,16 @@ def _list_sessions() -> int:
     for session in season.sessions:
         print(_format_session(session, settings))
     print(_format_cross_check(season))
+    return 0
+
+
+def _auth_check() -> int:
+    settings = load_import_settings()
+    gateway = build_google_calendar_gateway(settings)
+    ensured = ensure_calendar(gateway, settings.schedule.calendar_name, settings.schedule.timezone)
+    state = "created" if ensured.created else "reused"
+    print(f"{state} calendar {ensured.calendar.summary!r} (id {ensured.calendar.calendar_id})")
+    print(f"signed in, token cached at {settings.token_file}")
     return 0
 
 
