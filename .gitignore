@@ -1,0 +1,13 @@
+# Credentials — never commit
+.env
+client_secret.json
+token.json
+*.pem
+
+# Python
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/

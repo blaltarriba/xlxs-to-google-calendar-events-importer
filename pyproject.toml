@@ -1,0 +1,75 @@
+[project]
+name = "golf-calendar"
+version = "0.1.0"
+description = "Import the golf school season schedule from Excel into Google Calendar"
+requires-python = ">=3.12"
+dependencies = [
+    "google-api-python-client>=2.140.0",
+    "google-auth>=2.34.0",
+    "google-auth-oauthlib>=1.2.1",
+    "openpyxl>=3.1.5",
+    "python-dotenv>=1.0.1",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[dependency-groups]
+dev = [
+    "mypy>=1.11.0",
+    "pytest>=8.3.0",
+    "ruff>=0.6.0",
+    "types-openpyxl>=3.1.5.20260827",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = [
+    "E",   # pycodestyle errors
+    "W",   # pycodestyle warnings
+    "F",   # pyflakes
+    "I",   # isort
+    "N",   # pep8-naming
+    "UP",  # pyupgrade
+    "B",   # flake8-bugbear
+    "A",   # flake8-builtins
+    "C4",  # flake8-comprehensions
+    "DTZ", # flake8-datetimez
+    "PTH", # flake8-use-pathlib
+    "RET", # flake8-return
+    "SIM", # flake8-simplify
+    "ARG", # flake8-unused-arguments
+    "TRY", # tryceratops
+    "RUF",
+]
+# Specific, contextual exception messages are required by the project's error rules
+# (fail fast, and never signal a failure without its reason). TRY003 argues the opposite.
+# RUF001: the sheet, the events and this CLI are written in Spanish; en dashes and
+# accented characters are intentional, not typos.
+ignore = ["TRY003", "RUF001"]
+
+[tool.ruff.lint.extend-per-file-ignores]
+"tests/**" = ["S101"]
+
+[tool.ruff.lint.isort]
+force-single-line = true
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+warn_unreachable = true
+disallow_any_unimported = true
+files = ["src", "tests"]
+
+[[tool.mypy.overrides]]
+module = ["googleapiclient.*", "google_auth_oauthlib.*"]
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
