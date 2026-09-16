@@ -28,6 +28,7 @@ from golf_calendar.google_calendar_gateway import CalendarError
 from golf_calendar.google_calendar_gateway import CalendarEvent
 from golf_calendar.google_calendar_gateway import CalendarRef
 from golf_calendar.google_calendar_gateway import GoogleCalendarGateway
+from golf_calendar.google_calendar_gateway import ImportedEvent
 from golf_calendar.google_calendar_gateway import load_credentials
 
 CALENDAR_NAME = "Golf training"
@@ -63,11 +64,13 @@ class StubbedTransport:
     def __init__(self, outcomes: dict[str, list[Outcome]]) -> None:
         self._queues = {method: list(queue) for method, queue in outcomes.items()}
         self.requests: list[tuple[str, dict[str, Any] | None]] = []
+        self.uris: list[str] = []
 
-    def __call__(self, _http: Any, postproc: Any, _uri: str, **request: Any) -> StubbedRequest:
+    def __call__(self, _http: Any, postproc: Any, uri: str, **request: Any) -> StubbedRequest:
         method = str(request.get("methodId") or "")
         body = request.get("body")
         self.requests.append((method, json.loads(body) if body else None))
+        self.uris.append(uri)
         queue = self._queues.get(method)
         if not queue:
             raise AssertionError(f"unexpected call to {method}")
@@ -379,6 +382,81 @@ class TestListImportedDates:
         transport = StubbedTransport({"calendar.events.list": [ok({"items": [item]})]})
 
         assert gateway_for(transport).list_imported_dates("cal-1", "key") == frozenset()
+
+
+class TestListImportedEvents:
+    def test_reads_each_imported_event_across_every_page(self) -> None:
+        first = {**_imported(date(2026, 9, 15)), "summary": "Golf 1/30", "description": "Uno"}
+        second = {**_imported(date(2026, 9, 22)), "summary": "Golf 2/30", "description": "Dos"}
+        transport = StubbedTransport(
+            {
+                "calendar.events.list": [
+                    ok({"items": [first], "nextPageToken": "p2"}),
+                    ok({"items": [second]}),
+                ]
+            }
+        )
+
+        events = gateway_for(transport).list_imported_events("cal-1", "key")
+
+        assert events == (
+            ImportedEvent("evt-2026-09-15", date(2026, 9, 15), "Golf 1/30", "Uno"),
+            ImportedEvent("evt-2026-09-22", date(2026, 9, 22), "Golf 2/30", "Dos"),
+        )
+
+    def test_reads_a_missing_title_and_description_as_empty(self) -> None:
+        transport = StubbedTransport(
+            {"calendar.events.list": [ok({"items": [_imported(date(2026, 9, 15))]})]}
+        )
+
+        events = gateway_for(transport).list_imported_events("cal-1", "key")
+
+        assert events == (ImportedEvent("evt-2026-09-15", date(2026, 9, 15), "", ""),)
+
+    @pytest.mark.parametrize(
+        "item",
+        [
+            {"extendedProperties": {"private": {"session_date": "2026-09-15"}}},
+            {"id": "", "extendedProperties": {"private": {"session_date": "2026-09-15"}}},
+            {"id": "e", "extendedProperties": {"private": {"session_date": "not-a-date"}}},
+            {"id": "e"},
+            "not-a-dict",
+        ],
+    )
+    def test_skips_an_event_without_an_id_or_a_usable_session_date(self, item: object) -> None:
+        transport = StubbedTransport({"calendar.events.list": [ok({"items": [item]})]})
+
+        assert gateway_for(transport).list_imported_events("cal-1", "key") == ()
+
+
+class TestUpdateEventText:
+    def test_sends_only_the_title_and_description(self) -> None:
+        transport = StubbedTransport({"calendar.events.patch": [ok({"id": "evt-1"})]})
+
+        gateway_for(transport).update_event_text("cal-1", "evt-1", "Golf 1/30 · Putt", "Grupo E")
+
+        assert transport.bodies_for("calendar.events.patch") == [
+            {"summary": "Golf 1/30 · Putt", "description": "Grupo E"}
+        ]
+
+    def test_patches_the_named_event_without_notifying_guests(self) -> None:
+        """The guest would otherwise receive one update email per session."""
+        transport = StubbedTransport({"calendar.events.patch": [ok({"id": "evt-1"})]})
+
+        gateway_for(transport).update_event_text("cal-1", "evt-1", "Title", "Description")
+
+        assert "/calendars/cal-1/events/evt-1?" in transport.uris[0]
+        assert "sendUpdates=none" in transport.uris[0]
+
+    def test_a_refusal_becomes_a_domain_error_preserving_its_cause(self) -> None:
+        transport = StubbedTransport(
+            {"calendar.events.patch": [refused(403, "Insufficient permission")]}
+        )
+
+        with pytest.raises(CalendarError, match=r"\(403\)") as raised:
+            gateway_for(transport).update_event_text("cal-1", "evt-1", "Title", "Description")
+
+        assert type(raised.value.__cause__).__name__ == "HttpError"
 
 
 class TestTranslatesFailures:

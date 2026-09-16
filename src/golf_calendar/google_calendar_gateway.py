@@ -102,11 +102,21 @@ class CalendarEvent:
     session_number: int
 
 
+@dataclass(frozen=True, slots=True)
+class ImportedEvent:
+    """An event this importer wrote earlier, as the calendar holds it now."""
+
+    event_id: str
+    session_date: date
+    summary: str
+    description: str
+
+
 class CalendarGateway(Protocol):
-    """What the import service needs from a calendar account.
+    """What the services need from a calendar account.
 
     Deliberately narrow: the service decides which calendar to use, so this port only
-    fetches and creates. It gains a method when a step actually needs one.
+    fetches, creates and retitles. It gains a method when a step actually needs one.
     """
 
     def list_calendars(self) -> tuple[CalendarRef, ...]:
@@ -119,6 +129,16 @@ class CalendarGateway(Protocol):
 
     def list_imported_dates(self, calendar_id: str, import_key: str) -> frozenset[date]:
         """The session dates this importer has already written into the calendar."""
+        ...
+
+    def list_imported_events(self, calendar_id: str, import_key: str) -> tuple[ImportedEvent, ...]:
+        """The events this importer has already written into the calendar."""
+        ...
+
+    def update_event_text(
+        self, calendar_id: str, event_id: str, summary: str, description: str
+    ) -> None:
+        """Replace one event's title and description, leaving every other field alone."""
         ...
 
     def create_event(self, calendar_id: str, event: CalendarEvent) -> str:
@@ -159,13 +179,32 @@ class GoogleCalendarGateway:
         return _to_calendar_ref(created, default_access_role="owner")
 
     def list_imported_dates(self, calendar_id: str, import_key: str) -> frozenset[date]:
-        """Ask once for everything this importer has already written.
+        return frozenset(_session_dates(self._imported_items(calendar_id, import_key)))
+
+    def list_imported_events(self, calendar_id: str, import_key: str) -> tuple[ImportedEvent, ...]:
+        items = self._imported_items(calendar_id, import_key)
+        return tuple(event for item in items if (event := _to_imported_event(item)) is not None)
+
+    def update_event_text(
+        self, calendar_id: str, event_id: str, summary: str, description: str
+    ) -> None:
+        with _translated_errors():
+            self._service.events().patch(
+                calendarId=calendar_id,
+                eventId=event_id,
+                body={"summary": summary, "description": description},
+                # The guest would otherwise receive one update email per session.
+                sendUpdates="none",
+            ).execute()
+
+    def _imported_items(self, calendar_id: str, import_key: str) -> list[object]:
+        """Ask once for everything this importer has already written, following every page.
 
         The marker alone scopes the query, so no time window is imposed: bounding the
         search to the season's own span would miss an event the user had dragged outside
         it, and duplicate it on the next run.
         """
-        found: set[date] = set()
+        items: list[object] = []
         page_token: str | None = None
         while True:
             with _translated_errors():
@@ -180,10 +219,10 @@ class GoogleCalendarGateway:
                     )
                     .execute()
                 )
-            found.update(_session_dates(response.get("items", [])))
+            items.extend(response.get("items", []))
             page_token = response.get("nextPageToken")
             if not page_token:
-                return frozenset(found)
+                return items
 
     def create_event(self, calendar_id: str, event: CalendarEvent) -> str:
         with _translated_errors():
@@ -339,20 +378,32 @@ def _to_event_body(event: CalendarEvent) -> Event:
     }
 
 
-def _session_dates(items: object) -> set[date]:
+def _session_dates(items: list[object]) -> set[date]:
     """Read the session date off each event, ignoring anything that does not carry one."""
-    if not isinstance(items, list):
-        return set()
-    found: set[date] = set()
-    for item in items:
-        marked = _private_properties(item).get(SESSION_DATE_PROPERTY)
-        if not isinstance(marked, str):
-            continue
-        try:
-            found.add(date.fromisoformat(marked))
-        except ValueError:
-            continue
-    return found
+    return {day for item in items if (day := _session_date_of(item)) is not None}
+
+
+def _to_imported_event(item: object) -> ImportedEvent | None:
+    """Read one listed event, or ``None`` when it lacks an id or a usable session date."""
+    session_date = _session_date_of(item)
+    if not isinstance(item, dict) or not item.get("id") or session_date is None:
+        return None
+    return ImportedEvent(
+        event_id=str(item["id"]),
+        session_date=session_date,
+        summary=str(item.get("summary", "")),
+        description=str(item.get("description", "")),
+    )
+
+
+def _session_date_of(item: object) -> date | None:
+    marked = _private_properties(item).get(SESSION_DATE_PROPERTY)
+    if not isinstance(marked, str):
+        return None
+    try:
+        return date.fromisoformat(marked)
+    except ValueError:
+        return None
 
 
 def _private_properties(item: object) -> dict[str, object]:

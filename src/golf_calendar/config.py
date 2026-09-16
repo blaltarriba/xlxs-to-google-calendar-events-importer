@@ -70,6 +70,14 @@ class ImportSettings:
     token_file: Path
 
 
+@dataclass(frozen=True, slots=True)
+class TrainingDetailsSettings:
+    """Everything :data:`ImportSettings` covers, plus whose training details to add."""
+
+    import_settings: ImportSettings
+    training_group: str
+
+
 def load_schedule_settings(env_file: Path | None = None) -> ScheduleSettings:
     """Read and validate the settings needed to parse and describe the season."""
     _load_environment(env_file)
@@ -95,6 +103,18 @@ def load_import_settings(env_file: Path | None = None) -> ImportSettings:
         invitee_email=_read_email("INVITEE_EMAIL"),
         client_secret_file=_read_path("GOOGLE_CLIENT_SECRET_FILE", default="client_secret.json"),
         token_file=_read_path("GOOGLE_TOKEN_FILE", default="token.json"),
+    )
+
+
+def load_training_details_settings(env_file: Path | None = None) -> TrainingDetailsSettings:
+    """Read and validate everything needed to add a group's training details to its events.
+
+    ``TRAINING_GROUP`` is demanded only here, so an ``.env`` that predates training details
+    still serves every other command.
+    """
+    return TrainingDetailsSettings(
+        import_settings=load_import_settings(env_file),
+        training_group=_read_text("TRAINING_GROUP"),
     )
 
 

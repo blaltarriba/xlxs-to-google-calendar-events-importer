@@ -85,6 +85,19 @@ class TrainingSession:
             raise InvalidSeasonError(f"session number {self.number} outside 1..{self.total}")
 
 
+@dataclass(frozen=True, slots=True)
+class TrainingDetail:
+    """What one group practises on one session date, e.g. ``Putt + Juego largo``.
+
+    ``group_label`` is the group's heading exactly as the school's sheet writes it, so it can
+    be shown back to the reader without restating the sheet's wording here.
+    """
+
+    session_date: date
+    group_label: str
+    activities: str
+
+
 def number_sessions(session_dates: Iterable[date]) -> tuple[TrainingSession, ...]:
     """Order ``session_dates`` and number them ``1..N`` of ``N``.
 

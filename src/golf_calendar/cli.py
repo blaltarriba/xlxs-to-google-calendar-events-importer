@@ -9,10 +9,12 @@ from __future__ import annotations
 import argparse
 import sys
 from collections.abc import Sequence
+from pathlib import Path
 
 from golf_calendar.config import ScheduleSettings
 from golf_calendar.config import load_import_settings
 from golf_calendar.config import load_schedule_settings
+from golf_calendar.config import load_training_details_settings
 from golf_calendar.domain import GolfCalendarError
 from golf_calendar.domain import Season
 from golf_calendar.domain import TrainingSession
@@ -23,6 +25,10 @@ from golf_calendar.import_service import ImportReport
 from golf_calendar.import_service import ensure_calendar
 from golf_calendar.import_service import import_training_sessions
 from golf_calendar.import_service import plan_import
+from golf_calendar.training_details_reader import read_training_details
+from golf_calendar.training_details_service import TrainingDetailsPlan
+from golf_calendar.training_details_service import apply_training_details
+from golf_calendar.training_details_service import plan_training_details
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -64,6 +70,21 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Show what would be created without writing anything.",
     )
+    details = subcommands.add_parser(
+        "add-training-details",
+        help="Add your group's training detail to each imported event. Safe to re-run.",
+    )
+    details.add_argument(
+        "details_file",
+        type=Path,
+        metavar="FILE",
+        help="The trimester's training details spreadsheet.",
+    )
+    details.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Show what would change without writing anything.",
+    )
     return parser
 
 
@@ -85,6 +106,8 @@ def _run(arguments: argparse.Namespace) -> int:
         return _auth_check()
     if arguments.command == "import":
         return _import(limit=arguments.limit, dry_run=arguments.dry_run)
+    if arguments.command == "add-training-details":
+        return _add_training_details(arguments.details_file, dry_run=arguments.dry_run)
     raise GolfCalendarError(f"unhandled command {arguments.command!r}")
 
 
@@ -126,6 +149,40 @@ def _import(limit: int | None, dry_run: bool) -> int:
     report = import_training_sessions(settings, gateway, season, limit)
     print(_format_report(report))
     return 0
+
+
+def _add_training_details(details_file: Path, dry_run: bool) -> int:
+    settings = load_training_details_settings()
+    import_settings = settings.import_settings
+    season = read_season(
+        schedule_file=import_settings.schedule.schedule_file,
+        weekday=import_settings.schedule.training_weekday,
+        extra_session_dates=import_settings.schedule.extra_session_dates,
+    )
+    details = read_training_details(details_file, settings.training_group)
+    gateway = build_google_calendar_gateway(import_settings)
+    if dry_run:
+        plan = plan_training_details(import_settings, gateway, season, details)
+        print(_format_training_details(plan, update_state="would be updated"))
+        return 0
+    applied = apply_training_details(import_settings, gateway, season, details)
+    print(_format_training_details(applied, update_state="updated"))
+    return 0
+
+
+def _format_training_details(plan: TrainingDetailsPlan, update_state: str) -> str:
+    """Render which events carry their detail, and which sessions still lack an event."""
+    lines = [
+        f"using calendar {plan.calendar.summary!r} (id {plan.calendar.calendar_id})",
+        f"{len(plan.already_current)} already up to date, {len(plan.to_update)} {update_state}",
+    ]
+    lines.extend(
+        f"  {_describe(update.session)}  {update.detail.activities}" for update in plan.to_update
+    )
+    if plan.without_event:
+        lines.append(f"{len(plan.without_event)} sessions have no event yet — run `import` first")
+        lines.extend(f"  {_describe(session)}" for session in plan.without_event)
+    return "\n".join(lines)
 
 
 def _format_plan(plan: ImportPlan) -> str:
