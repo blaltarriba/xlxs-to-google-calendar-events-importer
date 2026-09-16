@@ -19,6 +19,7 @@ from golf_calendar.domain import number_sessions
 from golf_calendar.google_calendar_gateway import CalendarError
 from golf_calendar.google_calendar_gateway import CalendarEvent
 from golf_calendar.google_calendar_gateway import CalendarRef
+from golf_calendar.google_calendar_gateway import ImportedEvent
 from golf_calendar.import_service import AmbiguousCalendarError
 from golf_calendar.import_service import EnsuredCalendar
 from golf_calendar.import_service import InvalidLimitError
@@ -78,6 +79,8 @@ class FakeCalendarGateway:
         self.created: list[tuple[str, str]] = []
         self.events: list[CalendarEvent] = []
         self.queries: list[tuple[str, str]] = []
+        self.updates: list[tuple[str, str, str, str]] = []
+        self.texts: dict[str, tuple[str, str]] = {}
 
     def list_calendars(self) -> tuple[CalendarRef, ...]:
         self.list_calls += 1
@@ -98,6 +101,26 @@ class FakeCalendarGateway:
     def create_event(self, calendar_id: str, event: CalendarEvent) -> str:
         self.events.append(event)
         return f"{calendar_id}-event-{len(self.events)}"
+
+    def list_imported_events(self, calendar_id: str, import_key: str) -> tuple[ImportedEvent, ...]:
+        self.queries.append((calendar_id, import_key))
+        return tuple(
+            self._as_imported(calendar_id, index, event)
+            for index, event in enumerate(self.events, start=1)
+            if event.import_key == import_key
+        )
+
+    def update_event_text(
+        self, calendar_id: str, event_id: str, summary: str, description: str
+    ) -> None:
+        self.updates.append((calendar_id, event_id, summary, description))
+        self.texts[event_id] = (summary, description)
+
+    def _as_imported(self, calendar_id: str, index: int, event: CalendarEvent) -> ImportedEvent:
+        """The event as the calendar now holds it: with its latest text, if it was updated."""
+        event_id = f"{calendar_id}-event-{index}"
+        summary, description = self.texts.get(event_id, (event.summary, event.description))
+        return ImportedEvent(event_id, event.starts_at.date(), summary, description)
 
 
 class FailingCalendarGateway(FakeCalendarGateway):
