@@ -8,11 +8,14 @@ a cover sheet still reads correctly.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from datetime import date
 from datetime import datetime
 from pathlib import Path
+from zipfile import BadZipFile
 
 from openpyxl import load_workbook
+from openpyxl.utils.exceptions import InvalidFileException
 
 from golf_calendar.domain import GolfCalendarError
 from golf_calendar.domain import TrainingDetail
@@ -23,9 +26,15 @@ type SheetRow = tuple[object, ...]
 
 
 class TrainingDetailsReadError(GolfCalendarError):
-    """Raised when the sheet's table or the requested group cannot be located."""
+    """Raised when the sheet cannot be opened or its table or group cannot be located."""
 
     code = "training_details_unreadable"
+
+
+class TrainingDetailsValidationError(GolfCalendarError):
+    """Raised when the table is found but one of its rows cannot be trusted."""
+
+    code = "training_details_invalid"
 
 
 def read_training_details(details_file: Path, group_label: str) -> tuple[TrainingDetail, ...]:
@@ -37,18 +46,23 @@ def read_training_details(details_file: Path, group_label: str) -> tuple[Trainin
     header, rows = _find_table(_read_sheets(details_file), details_file)
     date_column = header.index(DATE_HEADER)
     group_column = _find_group_column(header, group_label, details_file)
-    group_heading = header[group_column]
     details = [
-        TrainingDetail(session_date, group_heading, _text_of(_value_at(row, group_column)))
+        _read_detail(row, date_column, group_column, header[group_column])
         for row in rows
-        if (session_date := _as_date(_value_at(row, date_column))) is not None
+        if _value_at(row, date_column) is not None
     ]
+    _reject_repeated_dates(details)
     return tuple(sorted(details, key=lambda detail: detail.session_date))
 
 
 def _read_sheets(details_file: Path) -> list[list[SheetRow]]:
     """Load every sheet's cell values at once, so the file is not held open while parsing."""
-    workbook = load_workbook(filename=details_file, read_only=True, data_only=True)
+    try:
+        workbook = load_workbook(filename=details_file, read_only=True, data_only=True)
+    except (OSError, InvalidFileException, BadZipFile) as error:
+        raise TrainingDetailsReadError(
+            f"cannot open training details file {details_file}"
+        ) from error
     sheets: list[list[SheetRow]] = [
         [tuple(row) for row in sheet.iter_rows(values_only=True)] for sheet in workbook.worksheets
     ]
@@ -85,11 +99,37 @@ def _find_group_column(header: list[str], group_label: str, details_file: Path) 
     )
 
 
-def _as_date(value: object) -> date | None:
+def _read_detail(
+    row: SheetRow, date_column: int, group_column: int, sheet_group_label: str
+) -> TrainingDetail:
+    session_date = _read_date(_value_at(row, date_column))
+    activities = _text_of(_value_at(row, group_column))
+    if not activities:
+        raise TrainingDetailsValidationError(
+            f"no {sheet_group_label} detail on {session_date.isoformat()}"
+        )
+    return TrainingDetail(
+        session_date=session_date, group_label=sheet_group_label, activities=activities
+    )
+
+
+def _read_date(value: object) -> date:
     # datetime subclasses date, and a spreadsheet date cell arrives as a datetime.
     if isinstance(value, datetime):
         return value.date()
-    return value if isinstance(value, date) else None
+    if isinstance(value, date):
+        return value
+    raise TrainingDetailsValidationError(f"{value!r} is not a date in the {DATE_HEADER!r} column")
+
+
+def _reject_repeated_dates(details: Sequence[TrainingDetail]) -> None:
+    seen: set[date] = set()
+    for detail in details:
+        if detail.session_date in seen:
+            raise TrainingDetailsValidationError(
+                f"{detail.session_date.isoformat()} is listed twice"
+            )
+        seen.add(detail.session_date)
 
 
 def _value_at(row: SheetRow, column: int) -> object:
