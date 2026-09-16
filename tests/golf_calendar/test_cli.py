@@ -26,3 +26,18 @@ class TestImportArguments:
     def test_a_missing_command_is_rejected(self) -> None:
         with pytest.raises(SystemExit):
             main([])
+
+
+class TestAddTrainingDetailsArguments:
+    def test_the_details_file_is_required(self, capsys: pytest.CaptureFixture[str]) -> None:
+        with pytest.raises(SystemExit) as exited:
+            main(["add-training-details"])
+
+        assert exited.value.code == 2
+        assert "FILE" in capsys.readouterr().err
+
+    def test_an_unknown_option_is_rejected(self) -> None:
+        with pytest.raises(SystemExit) as exited:
+            main(["add-training-details", "details.xlsx", "--limit", "2"])
+
+        assert exited.value.code == 2

@@ -92,6 +92,35 @@ their original title and numbering.
 Events are created with your availability set to **free**, and the guest receives no
 invitation email (otherwise one would arrive per session).
 
+## Training details
+
+Each trimester the school publishes a spreadsheet (e.g. `Entrenamientos martes 1 trim.xlsx`)
+saying what every group practises each session. `add-training-details` adds the detail for
+the group named by `TRAINING_GROUP` to the events `import` already created:
+
+```
+Title:        Entrenamiento de Golf Mateo 1/30 · Putt + Juego largo
+Description:  Entrenamiento de Golf Mateo
+              Sesión 1 de 30
+
+              Grupo E: Putt + Juego largo
+```
+
+```sh
+uv run golf-calendar add-training-details "Entrenamientos martes 1 trim.xlsx" --dry-run
+uv run golf-calendar add-training-details "Entrenamientos martes 1 trim.xlsx"
+```
+
+Run it once per trimester file. It is idempotent: the title and description are rendered
+from the templates plus the detail and written only when they differ, so a re-run changes
+nothing and a corrected spreadsheet replaces the old detail rather than adding a second one.
+Only the title and description are touched — time, location, guest and availability are
+left as they are, and the guest is not emailed.
+
+Because the text is rendered afresh, a title or description you edited by hand on those
+events is overwritten. A detail for a date that is not a session of the season stops the run
+before anything is written; sessions whose event has not been imported yet are listed.
+
 ## Development
 
 ```sh

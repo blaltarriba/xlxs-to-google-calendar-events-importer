@@ -9,8 +9,10 @@ import pytest
 from golf_calendar.config import ConfigError
 from golf_calendar.config import ImportSettings
 from golf_calendar.config import ScheduleSettings
+from golf_calendar.config import TrainingDetailsSettings
 from golf_calendar.config import load_import_settings
 from golf_calendar.config import load_schedule_settings
+from golf_calendar.config import load_training_details_settings
 from golf_calendar.domain import TrainingWeekday
 
 VALID_ENVIRONMENT = {
@@ -44,6 +46,7 @@ def _valid_environment(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.chdir(tmp_path)
     for name, value in VALID_ENVIRONMENT.items():
         monkeypatch.setenv(name, value)
+    monkeypatch.delenv("TRAINING_GROUP", raising=False)
 
 
 def load() -> ImportSettings:
@@ -214,3 +217,28 @@ class TestExtraSessionDates:
 
         with pytest.raises(ConfigError, match="not an ISO date"):
             load()
+
+
+class TestTrainingDetailsSettings:
+    def test_reads_the_training_group_alongside_the_import_settings(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("TRAINING_GROUP", "  Grupo E  ")
+
+        settings = load_training_details_settings(env_file=EMPTY_ENV_FILE)
+
+        assert settings == TrainingDetailsSettings(import_settings=load(), training_group="Grupo E")
+
+    @pytest.mark.parametrize("value", [None, "", "   "])
+    def test_a_missing_or_blank_training_group_is_rejected(
+        self, monkeypatch: pytest.MonkeyPatch, value: str | None
+    ) -> None:
+        if value is not None:
+            monkeypatch.setenv("TRAINING_GROUP", value)
+
+        with pytest.raises(ConfigError, match="TRAINING_GROUP"):
+            load_training_details_settings(env_file=EMPTY_ENV_FILE)
+
+    def test_importing_does_not_require_a_training_group(self) -> None:
+        """An existing `.env` written before training details existed must keep working."""
+        assert load().invitee_email == "wife@example.com"
