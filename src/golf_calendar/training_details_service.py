@@ -4,7 +4,8 @@ Depends on the :class:`CalendarGateway` port rather than on Google, so every dec
 is unit-testable against a fake.
 
 The new title and description are rendered afresh from the configured templates plus the
-detail, then compared with what the calendar holds, so only events that differ are planned.
+detail, then compared with what the calendar holds. That keeps a re-run free of writes and
+lets a corrected sheet replace an old detail instead of stacking a second one.
 """
 
 from __future__ import annotations
@@ -30,6 +31,18 @@ class CalendarNotFoundError(GolfCalendarError):
     """Raised when there is no calendar whose events could be given details."""
 
     code = "calendar_not_found"
+
+
+class UnknownSessionDateError(GolfCalendarError):
+    """Raised when a detail names a date the season does not train on."""
+
+    code = "training_detail_unknown_session"
+
+
+class PartialTrainingDetailsError(GolfCalendarError):
+    """Raised when the run failed part-way, naming how far it got."""
+
+    code = "training_details_incomplete"
 
 
 @dataclass(frozen=True, slots=True)
@@ -61,17 +74,14 @@ def plan_training_details(
 ) -> TrainingDetailsPlan:
     """Work out which events need their detail added or corrected. Writes nothing.
 
-    Details for dates the season does not train on are left out.
+    Every detail must name one of the season's sessions; otherwise the two spreadsheets
+    disagree, and that is reported before anything is asked of the calendar.
     """
-    sessions = _sessions_by_date(season)
+    sessions = _sessions_for(season, details)
     calendar = _existing_calendar(gateway, settings.schedule.calendar_name)
     key = import_key(season, settings.schedule.training_weekday)
     events = _imported_events_by_date(gateway, calendar, key)
-    matched = [
-        (detail, sessions[detail.session_date])
-        for detail in details
-        if detail.session_date in sessions
-    ]
+    matched = [(detail, sessions[detail.session_date]) for detail in details]
     updates = [
         (event, _build_update(session, detail, event, settings, key))
         for detail, session in matched
@@ -89,8 +99,33 @@ def plan_training_details(
     )
 
 
-def _sessions_by_date(season: Season) -> dict[date, TrainingSession]:
-    return {session.session_date: session for session in season.sessions}
+def apply_training_details(
+    settings: ImportSettings,
+    gateway: CalendarGateway,
+    season: Season,
+    details: Sequence[TrainingDetail],
+) -> TrainingDetailsPlan:
+    """Give every imported event its session's detail, and return the plan it carried out.
+
+    Safe to re-run and safe to interrupt: events already carrying their detail are skipped.
+    """
+    plan = plan_training_details(settings, gateway, season, details)
+    _update_events(gateway, plan)
+    return plan
+
+
+def _sessions_for(season: Season, details: Sequence[TrainingDetail]) -> dict[date, TrainingSession]:
+    sessions = {session.session_date: session for session in season.sessions}
+    unknown = sorted(
+        detail.session_date for detail in details if detail.session_date not in sessions
+    )
+    if unknown:
+        listed = ", ".join(day.isoformat() for day in unknown)
+        raise UnknownSessionDateError(
+            f"{listed} is not a session of the season — check that the training details "
+            "file belongs to the same weekday and season as the schedule"
+        )
+    return sessions
 
 
 def _existing_calendar(gateway: CalendarGateway, name: str) -> CalendarRef:
@@ -129,3 +164,18 @@ def _build_update(
 
 def _is_current(event: ImportedEvent, update: DetailUpdate) -> bool:
     return event.summary == update.summary and event.description == update.description
+
+
+def _update_events(gateway: CalendarGateway, plan: TrainingDetailsPlan) -> None:
+    """Patch each planned event, reporting how far it got if one fails."""
+    for updated_count, update in enumerate(plan.to_update):
+        try:
+            gateway.update_event_text(
+                plan.calendar.calendar_id, update.event_id, update.summary, update.description
+            )
+        except GolfCalendarError as error:
+            raise PartialTrainingDetailsError(
+                f"updated {updated_count} of {len(plan.to_update)} events before failing on "
+                f"session {update.session.number} ({update.session.session_date.isoformat()}): "
+                f"{error} — re-run to continue from where it stopped"
+            ) from error
